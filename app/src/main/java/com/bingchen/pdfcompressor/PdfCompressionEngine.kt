@@ -96,7 +96,7 @@ class PdfCompressionEngine(context: Context) {
                             var scaled: Bitmap? = null
                             try {
                                 var sample = 1
-                                while (max(xObject.width / (sample * 2), xObject.height / (sample * 2)) >= options.maxDimension) {
+                                while (max(xObject.width / (sample * 2), xObject.height / (sample * 2)) > options.maxDimension) {
                                     sample *= 2
                                 }
                                 bitmap = xObject.getImage(null, sample)
