@@ -15,27 +15,33 @@ class PdfTextExtractor(context: Context) {
     fun extract(input: InputStream, includePageMarkers: Boolean = true): Result {
         PDDocument.load(input).use { document ->
             require(!document.isEncrypted) { "この PDF は暗号化されているため、現在は対応していません。" }
-            require(document.numberOfPages > 0) { "PDF にページがありません。" }
+            val pageCount = document.numberOfPages
+            require(pageCount > 0) { "PDF にページがありません。" }
 
-            val stripper = PDFTextStripper().apply {
-                sortByPosition = true
-                lineSeparator = "\n"
-                wordSeparator = ""
-                paragraphStart = "\n"
-                paragraphEnd = "\n"
-                pageStart = ""
-                pageEnd = ""
-                if (includePageMarkers) {
-                    pageSeparator = "\n\n──────── ページ区切り ────────\n\n"
-                } else {
-                    pageSeparator = "\n\n"
+            // Extract page-by-page so separators are inserted only BETWEEN pages.
+            val output = StringBuilder()
+            for (page in 1..pageCount) {
+                val stripper = PDFTextStripper().apply {
+                    sortByPosition = true
+                    lineSeparator = "\n"
+                    wordSeparator = ""
+                    paragraphStart = "\n"
+                    paragraphEnd = "\n"
+                    pageStart = ""
+                    pageEnd = ""
+                    startPage = page
+                    endPage = page
                 }
+                val pageText = stripper.getText(document).replace("\r\n", "\n").replace('\r', '\n').trim()
+                if (page > 1 && includePageMarkers) {
+                    output.append("\n\n──────── ページ ").append(page).append(" ────────\n\n")
+                } else if (page > 1) {
+                    output.append("\n\n")
+                }
+                output.append(pageText)
             }
-            val text = stripper.getText(document)
-                .replace("\r\n", "\n")
-                .replace('\r', '\n')
-                .trim()
-            return Result(text, document.numberOfPages, text.length)
+            val text = output.toString().trim()
+            return Result(text, pageCount, text.length)
         }
     }
 
