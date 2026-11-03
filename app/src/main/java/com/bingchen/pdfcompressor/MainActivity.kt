@@ -11,10 +11,10 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AppCompatActivity
+import androidx.activity.ComponentActivity
 import androidx.documentfile.provider.DocumentFile
 
-class MainActivity : AppCompatActivity() {
+class MainActivity : ComponentActivity() {
     private val prefs by lazy { getSharedPreferences("pdf_compressor", MODE_PRIVATE) }
     private var treeUri: Uri? = null
     private var selectedUri: Uri? = null
