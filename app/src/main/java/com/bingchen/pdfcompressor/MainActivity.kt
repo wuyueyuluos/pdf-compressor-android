@@ -1,21 +1,26 @@
 package com.bingchen.pdfcompressor
 
-import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
-import android.view.Gravity
+import android.os.Handler
+import android.os.Looper
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import androidx.activity.result.contract.ActivityResultContracts
+import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.documentfile.provider.DocumentFile
+import java.io.File
+import java.util.concurrent.Executors
 
 class MainActivity : ComponentActivity() {
     private val prefs by lazy { getSharedPreferences("pdf_compressor", MODE_PRIVATE) }
+    private val executor = Executors.newSingleThreadExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var treeUri: Uri? = null
     private var selectedUri: Uri? = null
     private var selectedName: String? = null
@@ -24,6 +29,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var fileList: LinearLayout
     private lateinit var status: TextView
     private lateinit var levelLabel: TextView
+    private lateinit var compressButton: Button
 
     private val folderPicker = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) {
@@ -36,6 +42,9 @@ class MainActivity : ComponentActivity() {
 
     private val pdfPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
+            try {
+                contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } catch (_: Exception) { }
             selectedUri = uri
             selectedName = DocumentFile.fromSingleUri(this, uri)?.name ?: "所选 PDF"
             renderSelection()
@@ -47,6 +56,11 @@ class MainActivity : ComponentActivity() {
         treeUri = prefs.getString("tree_uri", null)?.let(Uri::parse)
         buildUi()
         if (treeUri != null) scanFolder()
+    }
+
+    override fun onDestroy() {
+        executor.shutdown()
+        super.onDestroy()
     }
 
     private fun buildUi() {
@@ -106,11 +120,16 @@ class MainActivity : ComponentActivity() {
         root.addView(status)
         fileList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(fileList)
-        button("压缩所选文件") {
-            status.text = "第一阶段已完成文件选择与扫描界面；压缩引擎正在接入，暂时不会修改你的原文件。"
+        compressButton = Button(this).apply {
+            text = "执行基础整理"
+            isAllCaps = false
+            setOnClickListener { compressSelected() }
         }
+        root.addView(compressButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(50)).apply {
+            bottomMargin = dp(6)
+        })
         root.addView(TextView(this).apply {
-            text = "提示：扫描列表会显示完整来源路径；压缩文件将统一放入所选文件夹内的「PDF压缩」目录，原文件不会被覆盖。"
+            text = "当前版本先进行 PDF 结构重写与完整性校验，不会重采样图片；因此不保证体积变小。结果仅在确实变小时保存到「PDF压缩」目录，原文件始终保留。图片压缩功能仍在开发中。"
             textSize = 12f
             setTextColor(0xFF8B9696.toInt())
             setPadding(0, dp(14), 0, 0)
@@ -171,6 +190,74 @@ class MainActivity : ComponentActivity() {
 
     private fun renderSelection() {
         status.text = if (selectedUri != null) "已选择：$selectedName。点击列表可切换文件。" else "请选择 PDF 文件。"
+    }
+
+    private fun compressSelected() {
+        val inputUri = selectedUri
+        val outputRootUri = treeUri
+        if (inputUri == null) {
+            Toast.makeText(this, "请先从列表或文件选择器中选择一个 PDF。", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (outputRootUri == null) {
+            Toast.makeText(this, "请先选择扫描文件夹，压缩结果将保存在该文件夹内。", Toast.LENGTH_LONG).show()
+            return
+        }
+        compressButton.isEnabled = false
+        status.text = "正在整理 PDF，请稍候……"
+        val name = selectedName ?: "document.pdf"
+        executor.execute {
+            var temp: File? = null
+            try {
+                val originalBytes = contentResolver.openFileDescriptor(inputUri, "r")?.use { it.statSize }?.takeIf { it > 0 } ?: 0L
+                temp = File(cacheDir, "pdf_work_${System.currentTimeMillis()}.pdf")
+                val result = contentResolver.openInputStream(inputUri)?.use { input ->
+                    PdfCompressionEngine(this).rewrite(input, originalBytes, temp!!)
+                } ?: throw IllegalStateException("无法读取原 PDF")
+                if (result.outputBytes >= result.originalBytes || result.originalBytes <= 0L) {
+                    temp.delete()
+                    mainHandler.post {
+                        status.text = "已完成完整性校验：共 ${result.pageCount} 页。重写后没有变小，因此未保存结果，也没有改动原文件。"
+                        compressButton.isEnabled = true
+                    }
+                    return@execute
+                }
+
+                val tree = DocumentFile.fromTreeUri(this, outputRootUri) ?: throw IllegalStateException("无法访问输出文件夹")
+                val outputDir = tree.findFile("PDF压缩")?.takeIf { it.isDirectory }
+                    ?: tree.createDirectory("PDF压缩")
+                    ?: throw IllegalStateException("无法创建 PDF压缩 文件夹")
+                val base = name.substringBeforeLast('.', name)
+                var outputName = "${base}_压缩.pdf"
+                var suffix = 2
+                while (outputDir.findFile(outputName) != null) {
+                    outputName = "${base}_压缩($suffix).pdf"
+                    suffix++
+                }
+                val target = outputDir.createFile("application/pdf", outputName)
+                    ?: throw IllegalStateException("无法创建输出 PDF")
+                try {
+                    contentResolver.openOutputStream(target.uri, "w")?.use { out ->
+                        temp.inputStream().use { it.copyTo(out) }
+                    } ?: throw IllegalStateException("无法写入输出 PDF")
+                } catch (e: Exception) {
+                    target.delete()
+                    throw e
+                }
+                temp.delete()
+                val savedBytes = target.length()
+                mainHandler.post {
+                    status.text = "整理完成：${result.pageCount} 页，${readableSize(result.originalBytes)} → ${readableSize(savedBytes)}，节省 ${String.format("%.1f", (1.0 - savedBytes.toDouble() / result.originalBytes) * 100)}%。已保存到「PDF压缩/$outputName」。"
+                    compressButton.isEnabled = true
+                }
+            } catch (e: Exception) {
+                temp?.delete()
+                mainHandler.post {
+                    status.text = "处理失败：${e.message ?: "未知错误"}"
+                    compressButton.isEnabled = true
+                }
+            }
+        }
     }
 
     private fun updateLevelLabel() {
