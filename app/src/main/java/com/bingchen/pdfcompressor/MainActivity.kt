@@ -121,7 +121,7 @@ class MainActivity : ComponentActivity() {
         fileList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(fileList)
         compressButton = Button(this).apply {
-            text = "执行基础整理"
+            text = "压缩所选 PDF"
             isAllCaps = false
             setOnClickListener { compressSelected() }
         }
@@ -129,7 +129,7 @@ class MainActivity : ComponentActivity() {
             bottomMargin = dp(6)
         })
         root.addView(TextView(this).apply {
-            text = "当前版本先进行 PDF 结构重写与完整性校验，不会重采样图片；因此不保证体积变小。结果仅在确实变小时保存到「PDF压缩」目录，原文件始终保留。图片压缩功能仍在开发中。"
+            text = "压缩会尝试重新编码符合条件的嵌入图片，并保留 PDF 页面中的文字与矢量内容。带特殊透明蒙版的图片会跳过。结果仅在确实变小时保存到「PDF压缩」目录，原文件始终保留。"
             textSize = 12f
             setTextColor(0xFF8B9696.toInt())
             setPadding(0, dp(14), 0, 0)
@@ -206,13 +206,14 @@ class MainActivity : ComponentActivity() {
         compressButton.isEnabled = false
         status.text = "正在整理 PDF，请稍候……"
         val name = selectedName ?: "document.pdf"
+        val selectedLevel = level
         executor.execute {
             var temp: File? = null
             try {
                 val originalBytes = contentResolver.openFileDescriptor(inputUri, "r")?.use { it.statSize }?.takeIf { it > 0 } ?: 0L
                 temp = File(cacheDir, "pdf_work_${System.currentTimeMillis()}.pdf")
                 val result = contentResolver.openInputStream(inputUri)?.use { input ->
-                    PdfCompressionEngine(this).rewrite(input, originalBytes, temp!!)
+                    PdfCompressionEngine(this).rewrite(input, originalBytes, temp!!, selectedLevel)
                 } ?: throw IllegalStateException("无法读取原 PDF")
                 if (result.outputBytes >= result.originalBytes || result.originalBytes <= 0L) {
                     temp.delete()
@@ -247,7 +248,7 @@ class MainActivity : ComponentActivity() {
                 temp.delete()
                 val savedBytes = target.length()
                 mainHandler.post {
-                    status.text = "整理完成：${result.pageCount} 页，${readableSize(result.originalBytes)} → ${readableSize(savedBytes)}，节省 ${String.format("%.1f", (1.0 - savedBytes.toDouble() / result.originalBytes) * 100)}%。已保存到「PDF压缩/$outputName」。"
+                    status.text = "压缩完成：${result.pageCount} 页，处理图片 ${result.imagesCompressed} 张，跳过 ${result.imagesSkipped} 张。${readableSize(result.originalBytes)} → ${readableSize(savedBytes)}，节省 ${String.format("%.1f", (1.0 - savedBytes.toDouble() / result.originalBytes) * 100)}%。已保存到「PDF压缩/$outputName」。"
                     compressButton.isEnabled = true
                 }
             } catch (e: Exception) {
