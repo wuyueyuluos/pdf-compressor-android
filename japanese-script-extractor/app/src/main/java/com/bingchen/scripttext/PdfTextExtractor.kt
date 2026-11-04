@@ -4,8 +4,11 @@ import android.content.Context
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.text.PDFTextStripper
+import com.tom_roush.pdfbox.text.TextPosition
 import java.io.InputStream
 import java.nio.charset.StandardCharsets
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 class PdfTextExtractor(context: Context) {
     init { PDFBoxResourceLoader.init(context.applicationContext) }
@@ -18,21 +21,38 @@ class PdfTextExtractor(context: Context) {
             val pageCount = document.numberOfPages
             require(pageCount > 0) { "PDF にページがありません。" }
 
-            // Extract page-by-page so separators are inserted only BETWEEN pages.
             val output = StringBuilder()
             for (page in 1..pageCount) {
-                val stripper = PDFTextStripper().apply {
-                    sortByPosition = true
-                    lineSeparator = "\n"
-                    wordSeparator = ""
-                    paragraphStart = "\n"
-                    paragraphEnd = "\n"
-                    pageStart = ""
-                    pageEnd = ""
+                // Detect the writing direction from glyph coordinates before choosing
+                // the extraction strategy. PDFTextStripper's positional sort is
+                // designed for horizontal text and interleaves vertical columns.
+                val probe = PositionCollector().apply {
+                    sortByPosition = false
                     startPage = page
                     endPage = page
                 }
-                val pageText = stripper.getText(document).replace("\r\n", "\n").replace('\r', '\n').trim()
+                probe.getText(document)
+
+                val pageText = if (probe.isVerticalLayout()) {
+                    probe.toVerticalText()
+                } else {
+                    val stripper = PDFTextStripper().apply {
+                        sortByPosition = true
+                        lineSeparator = "\n"
+                        wordSeparator = ""
+                        paragraphStart = "\n"
+                        paragraphEnd = "\n"
+                        pageStart = ""
+                        pageEnd = ""
+                        startPage = page
+                        endPage = page
+                    }
+                    stripper.getText(document)
+                        .replace("\r\n", "\n")
+                        .replace('\r', '\n')
+                        .trim()
+                }
+
                 if (page > 1 && includePageMarkers) {
                     output.append("\n\n──────── ページ ").append(page).append(" ────────\n\n")
                 } else if (page > 1) {
@@ -42,6 +62,72 @@ class PdfTextExtractor(context: Context) {
             }
             val text = output.toString().trim()
             return Result(text, pageCount, text.length)
+        }
+    }
+
+    private class PositionCollector : PDFTextStripper() {
+        private val collected = mutableListOf<TextPosition>()
+
+        override fun processTextPosition(text: TextPosition) {
+            collected.add(text)
+            super.processTextPosition(text)
+        }
+
+        fun isVerticalLayout(): Boolean {
+            if (collected.size < 8) return false
+            // Vertical Japanese: many distinct y positions but relatively few
+            // x positions because glyphs share a column. Horizontal text behaves
+            // in the opposite way.
+            val xBands = collected.map { (it.xDirAdj / 8f).roundToInt() }.distinct().size
+            val yBands = collected.map { (it.yDirAdj / 8f).roundToInt() }.distinct().size
+            return xBands.toFloat() < yBands.toFloat() * 0.8f
+        }
+
+        fun toVerticalText(): String {
+            if (collected.isEmpty()) return ""
+
+            data class Column(var centerX: Float, val glyphs: MutableList<TextPosition>)
+            val columns = mutableListOf<Column>()
+
+            // Japanese tategaki is read from the rightmost column to the left,
+            // and from top to bottom inside each column.
+            collected
+                .filter { !it.unicode.isNullOrEmpty() }
+                .sortedByDescending { it.xDirAdj }
+                .forEach { glyph ->
+                    val current = columns.lastOrNull()
+                    if (current == null || abs(current.centerX - glyph.xDirAdj) > 6f) {
+                        columns.add(Column(glyph.xDirAdj, mutableListOf(glyph)))
+                    } else {
+                        current.glyphs.add(glyph)
+                        current.centerX = current.glyphs.map { it.xDirAdj }.average().toFloat()
+                    }
+                }
+
+            val result = StringBuilder()
+            columns.forEachIndexed { columnIndex, column ->
+                val glyphs = column.glyphs.sortedBy { it.yDirAdj }
+                val heights = glyphs.map { it.heightDir }.filter { it > 0f }.sorted()
+                val typicalHeight = if (heights.isEmpty()) 14f else heights[heights.size / 2]
+                var previous: TextPosition? = null
+
+                glyphs.forEach { glyph ->
+                    val prev = previous
+                    if (prev != null) {
+                        val gap = glyph.yDirAdj - prev.yDirAdj
+                        if (gap > typicalHeight * 2.5f) {
+                            result.append("\n\n")
+                        } else if (gap > typicalHeight * 1.6f) {
+                            result.append('\n')
+                        }
+                    }
+                    result.append(glyph.unicode)
+                    previous = glyph
+                }
+
+                if (columnIndex < columns.lastIndex) result.append('\n')
+            }
+            return result.toString().trim()
         }
     }
 
