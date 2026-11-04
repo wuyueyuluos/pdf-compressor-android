@@ -106,23 +106,13 @@ class PdfTextExtractor(context: Context) {
 
             val result = StringBuilder()
             columns.forEachIndexed { columnIndex, column ->
+                // A Japanese vertical column becomes one horizontal TXT line.
+                // Do not interpret normal glyph spacing as line breaks: PDFBox's
+                // glyph height can be much smaller than the vertical advance,
+                // which previously split nearly every character onto its own line.
                 val glyphs = column.glyphs.sortedBy { it.y }
-                val heights = glyphs.map { it.height }.filter { it > 0f }.sorted()
-                val typicalHeight = if (heights.isEmpty()) 14f else heights[heights.size / 2]
-                var previous: TextPosition? = null
-
                 glyphs.forEach { glyph ->
-                    val prev = previous
-                    if (prev != null) {
-                        val gap = glyph.y - prev.y
-                        if (gap > typicalHeight * 2.5f) {
-                            result.append("\n\n")
-                        } else if (gap > typicalHeight * 1.6f) {
-                            result.append('\n')
-                        }
-                    }
                     result.append(glyph.unicode)
-                    previous = glyph
                 }
 
                 if (columnIndex < columns.lastIndex) result.append('\n')
