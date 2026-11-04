@@ -78,8 +78,8 @@ class PdfTextExtractor(context: Context) {
             // Vertical Japanese: many distinct y positions but relatively few
             // x positions because glyphs share a column. Horizontal text behaves
             // in the opposite way.
-            val xBands = collected.map { (it.xDirAdj / 8f).roundToInt() }.distinct().size
-            val yBands = collected.map { (it.yDirAdj / 8f).roundToInt() }.distinct().size
+            val xBands = collected.map { (it.x / 8f).roundToInt() }.distinct().size
+            val yBands = collected.map { (it.y / 8f).roundToInt() }.distinct().size
             return xBands.toFloat() < yBands.toFloat() * 0.8f
         }
 
@@ -93,28 +93,28 @@ class PdfTextExtractor(context: Context) {
             // and from top to bottom inside each column.
             collected
                 .filter { !it.unicode.isNullOrEmpty() }
-                .sortedByDescending { it.xDirAdj }
+                .sortedByDescending { it.x }
                 .forEach { glyph ->
                     val current = columns.lastOrNull()
-                    if (current == null || abs(current.centerX - glyph.xDirAdj) > 6f) {
-                        columns.add(Column(glyph.xDirAdj, mutableListOf(glyph)))
+                    if (current == null || abs(current.centerX - glyph.x) > 6f) {
+                        columns.add(Column(glyph.x, mutableListOf(glyph)))
                     } else {
                         current.glyphs.add(glyph)
-                        current.centerX = current.glyphs.map { it.xDirAdj }.average().toFloat()
+                        current.centerX = current.glyphs.map { it.x }.average().toFloat()
                     }
                 }
 
             val result = StringBuilder()
             columns.forEachIndexed { columnIndex, column ->
-                val glyphs = column.glyphs.sortedBy { it.yDirAdj }
-                val heights = glyphs.map { it.heightDir }.filter { it > 0f }.sorted()
+                val glyphs = column.glyphs.sortedBy { it.y }
+                val heights = glyphs.map { it.height }.filter { it > 0f }.sorted()
                 val typicalHeight = if (heights.isEmpty()) 14f else heights[heights.size / 2]
                 var previous: TextPosition? = null
 
                 glyphs.forEach { glyph ->
                     val prev = previous
                     if (prev != null) {
-                        val gap = glyph.yDirAdj - prev.yDirAdj
+                        val gap = glyph.y - prev.y
                         if (gap > typicalHeight * 2.5f) {
                             result.append("\n\n")
                         } else if (gap > typicalHeight * 1.6f) {
