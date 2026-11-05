@@ -178,18 +178,21 @@ class MainActivity : ComponentActivity() {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL or Gravity.END
-            setPadding(0, dp(3), 0, dp(3))
+            setPadding(0, dp(4), 0, dp(4))
+            minimumHeight = dp(52)
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { action() }
         }
         val text = TextView(this).apply {
             this.text = label
             textSize = 13f
             setTextColor(0xFF344B50.toInt())
-            setPadding(dp(12), dp(9), dp(12), dp(9))
-            background = rounded(0xFFFFFCF8.toInt(), 20)
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            background = rounded(0xFFFFFCF8.toInt(), 18)
             elevation = dp(3).toFloat()
-            isClickable = true
-            isFocusable = true
-            setOnClickListener { action() }
+            minWidth = dp(150)
+            gravity = Gravity.CENTER
         }
         val icon = TextView(this).apply {
             this.text = symbol
@@ -198,10 +201,11 @@ class MainActivity : ComponentActivity() {
             setTextColor(0xFFFFFFFF.toInt())
             background = rounded(0xFF35AABD.toInt(), 100)
             elevation = dp(4).toFloat()
+            isClickable = false
         }
         row.addView(text)
-        row.addView(icon, LinearLayout.LayoutParams(dp(44), dp(44)).apply { leftMargin = dp(9) })
-        parent.addView(row)
+        row.addView(icon, LinearLayout.LayoutParams(dp(46), dp(46)).apply { leftMargin = dp(9) })
+        parent.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(54)))
         return text
     }
 
