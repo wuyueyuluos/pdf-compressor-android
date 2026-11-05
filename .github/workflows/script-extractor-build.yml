@@ -32,6 +32,10 @@ jobs:
         with:
           gradle-version: '8.9'
 
+      - name: Restore app icon resources
+        run: |
+          unzip -o japanese-script-extractor-icon-resources.zip -d app/src/main
+
       - name: Restore release keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
