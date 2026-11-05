@@ -74,13 +74,29 @@ class PdfTextExtractor(context: Context) {
         }
 
         fun isVerticalLayout(): Boolean {
-            if (collected.size < 8) return false
-            // Vertical Japanese: many distinct y positions but relatively few
-            // x positions because glyphs share a column. Horizontal text behaves
-            // in the opposite way.
-            val xBands = collected.map { (it.x / 8f).roundToInt() }.distinct().size
-            val yBands = collected.map { (it.y / 8f).roundToInt() }.distinct().size
-            return xBands.toFloat() < yBands.toFloat() * 0.8f
+            val glyphs = collected.filter { !it.unicode.isNullOrEmpty() }
+            if (glyphs.size < 8) return false
+
+            // Compare actual movement between consecutive glyphs instead of
+            // counting occupied coordinate buckets. Vertical Japanese advances
+            // mainly in Y while X stays nearly constant. Horizontal page numbers
+            // and labels no longer confuse the page-level direction test.
+            var verticalSteps = 0
+            var horizontalSteps = 0
+            for (index in 1 until glyphs.size) {
+                val previous = glyphs[index - 1]
+                val current = glyphs[index]
+                val dx = abs(current.x - previous.x)
+                val dy = abs(current.y - previous.y)
+
+                if (dx <= 3.5f && dy >= 2f) {
+                    verticalSteps++
+                } else if (dy <= 3.5f && dx >= 2f) {
+                    horizontalSteps++
+                }
+            }
+
+            return verticalSteps >= 5 && verticalSteps > horizontalSteps * 1.35f
         }
 
         fun toVerticalText(): String {
@@ -96,7 +112,10 @@ class PdfTextExtractor(context: Context) {
                 .sortedByDescending { it.x }
                 .forEach { glyph ->
                     val current = columns.lastOrNull()
-                    if (current == null || abs(current.centerX - glyph.x) > 6f) {
+                    // Numbering markers can sit 7-8pt beside the first glyph
+                    // of a vertical column. Keep them with that column; adjacent
+                    // Japanese columns in the supplied PDFs are at least ~18pt apart.
+                    if (current == null || abs(current.centerX - glyph.x) > 10f) {
                         columns.add(Column(glyph.x, mutableListOf(glyph)))
                     } else {
                         current.glyphs.add(glyph)
