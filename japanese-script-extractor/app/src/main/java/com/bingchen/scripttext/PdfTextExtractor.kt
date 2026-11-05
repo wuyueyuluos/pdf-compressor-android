@@ -74,29 +74,81 @@ class PdfTextExtractor(context: Context) {
         }
 
         fun isVerticalLayout(): Boolean {
-            val glyphs = collected.filter { !it.unicode.isNullOrEmpty() }
+            val glyphs = collected.filter { !it.unicode.isNullOrBlank() }
             if (glyphs.size < 8) return false
 
-            // Compare actual movement between consecutive glyphs instead of
-            // counting occupied coordinate buckets. Vertical Japanese advances
-            // mainly in Y while X stays nearly constant. Horizontal page numbers
-            // and labels no longer confuse the page-level direction test.
-            var verticalSteps = 0
-            var horizontalSteps = 0
-            for (index in 1 until glyphs.size) {
-                val previous = glyphs[index - 1]
-                val current = glyphs[index]
-                val dx = abs(current.x - previous.x)
-                val dy = abs(current.y - previous.y)
+            // PDF content-stream order is not a reliable reading order: some
+            // documents store glyphs column-by-column, others interleave them.
+            // Compare the nearest aligned neighbour in each direction instead.
+            // Vertical Japanese has a shorter same-column Y gap than same-row X
+            // gap; horizontal text has the opposite pattern.
+            val verticalGaps = FloatArray(glyphs.size) { Float.MAX_VALUE }
+            val horizontalGaps = FloatArray(glyphs.size) { Float.MAX_VALUE }
 
-                if (dx <= 3.5f && dy >= 2f) {
-                    verticalSteps++
-                } else if (dy <= 3.5f && dx >= 2f) {
-                    horizontalSteps++
+            fun buildGroups(axis: (TextPosition) -> Float): List<MutableList<Int>> {
+                val sorted = glyphs.indices.sortedBy { axis(glyphs[it]) }
+                val groups = mutableListOf<MutableList<Int>>()
+                sorted.forEach { index ->
+                    val value = axis(glyphs[index])
+                    val group = groups.lastOrNull()
+                    val center = group?.map { axis(glyphs[it]) }?.average()?.toFloat()
+                    if (group == null || center == null || abs(value - center) > 3.5f) {
+                        groups.add(mutableListOf(index))
+                    } else {
+                        group.add(index)
+                    }
+                }
+                return groups
+            }
+
+            // Same X coordinate: find each glyph's closest neighbour above/below.
+            buildGroups { it.x }.forEach { group ->
+                val sorted = group.sortedBy { glyphs[it].y }
+                sorted.forEachIndexed { position, index ->
+                    if (position > 0) {
+                        verticalGaps[index] = minOf(
+                            verticalGaps[index],
+                            abs(glyphs[index].y - glyphs[sorted[position - 1]].y)
+                        )
+                    }
+                    if (position < sorted.lastIndex) {
+                        verticalGaps[index] = minOf(
+                            verticalGaps[index],
+                            abs(glyphs[index].y - glyphs[sorted[position + 1]].y)
+                        )
+                    }
                 }
             }
 
-            return verticalSteps >= 5 && verticalSteps > horizontalSteps * 1.35f
+            // Same Y coordinate: find each glyph's closest neighbour left/right.
+            buildGroups { it.y }.forEach { group ->
+                val sorted = group.sortedBy { glyphs[it].x }
+                sorted.forEachIndexed { position, index ->
+                    if (position > 0) {
+                        horizontalGaps[index] = minOf(
+                            horizontalGaps[index],
+                            abs(glyphs[index].x - glyphs[sorted[position - 1]].x)
+                        )
+                    }
+                    if (position < sorted.lastIndex) {
+                        horizontalGaps[index] = minOf(
+                            horizontalGaps[index],
+                            abs(glyphs[index].x - glyphs[sorted[position + 1]].x)
+                        )
+                    }
+                }
+            }
+
+            var verticalVotes = 0
+            var horizontalVotes = 0
+            glyphs.indices.forEach { index ->
+                val vertical = verticalGaps[index]
+                val horizontal = horizontalGaps[index]
+                if (vertical < horizontal * 0.85f) verticalVotes++
+                else if (horizontal < vertical * 0.85f) horizontalVotes++
+            }
+
+            return verticalVotes >= 5 && verticalVotes > horizontalVotes * 1.25f
         }
 
         fun toVerticalText(): String {
