@@ -155,18 +155,42 @@ class PdfTextExtractor(context: Context) {
             if (collected.isEmpty()) return ""
 
             data class Column(var centerX: Float, val glyphs: MutableList<TextPosition>)
+            val allGlyphs = collected.filter { !it.unicode.isNullOrEmpty() }
+            if (allGlyphs.isEmpty()) return ""
+
+            val excluded = mutableSetOf<TextPosition>()
+            val pageNumber = extractFooterPageNumber(allGlyphs, excluded)
+
+            // Many scripts print a small 1, 2, 3... above every vertical column.
+            // These are layout guides, not part of the spoken script. Remove only
+            // small, standalone numeric labels in the narrow top band; normal
+            // numbers inside the body are retained.
+            val fontSizes = allGlyphs.map { it.fontSizeInPt }.filter { it > 0f }.sorted()
+            val typicalFontSize = if (fontSizes.isEmpty()) 14f else fontSizes[fontSizes.size / 2]
+            val minY = allGlyphs.minOf { it.y }
+            val maxY = allGlyphs.maxOf { it.y }
+            val pageHeight = (maxY - minY).coerceAtLeast(1f)
+            val headerLimit = minY + pageHeight * 0.16f
+
+            allGlyphs.forEach { glyph ->
+                val value = glyph.unicode.trim()
+                if (glyph.fontSizeInPt < typicalFontSize * 0.9f &&
+                    glyph.y <= headerLimit &&
+                    value.matches(Regex("\\d{1,2}"))
+                ) {
+                    excluded.add(glyph)
+                }
+            }
+
             val columns = mutableListOf<Column>()
 
             // Japanese tategaki is read from the rightmost column to the left,
             // and from top to bottom inside each column.
-            collected
-                .filter { !it.unicode.isNullOrEmpty() }
+            allGlyphs
+                .filterNot { it in excluded }
                 .sortedByDescending { it.x }
                 .forEach { glyph ->
                     val current = columns.lastOrNull()
-                    // Numbering markers can sit 7-8pt beside the first glyph
-                    // of a vertical column. Keep them with that column; adjacent
-                    // Japanese columns in the supplied PDFs are at least ~18pt apart.
                     if (current == null || abs(current.centerX - glyph.x) > 10f) {
                         columns.add(Column(glyph.x, mutableListOf(glyph)))
                     } else {
@@ -177,18 +201,76 @@ class PdfTextExtractor(context: Context) {
 
             val result = StringBuilder()
             columns.forEachIndexed { columnIndex, column ->
-                // A Japanese vertical column becomes one horizontal TXT line.
-                // Do not interpret normal glyph spacing as line breaks: PDFBox's
-                // glyph height can be much smaller than the vertical advance,
-                // which previously split nearly every character onto its own line.
                 val glyphs = column.glyphs.sortedBy { it.y }
-                glyphs.forEach { glyph ->
-                    result.append(glyph.unicode)
-                }
-
+                glyphs.forEach { glyph -> result.append(glyph.unicode) }
                 if (columnIndex < columns.lastIndex) result.append('\n')
             }
+
+            // Keep the PDF's own page counter as one intact token at the end.
+            // It is extracted separately because its horizontal baseline would
+            // otherwise be split across the vertical body columns.
+            if (!pageNumber.isNullOrBlank()) {
+                if (result.isNotEmpty()) result.append('\n')
+                result.append(pageNumber)
+            }
+
             return result.toString().trim()
+        }
+
+        private fun extractFooterPageNumber(
+            glyphs: List<TextPosition>,
+            excluded: MutableSet<TextPosition>
+        ): String? {
+            val sizes = glyphs.map { it.fontSizeInPt }.filter { it > 0f }.sorted()
+            if (sizes.isEmpty()) return null
+            val typicalSize = sizes[sizes.size / 2]
+            val minY = glyphs.minOf { it.y }
+            val maxY = glyphs.maxOf { it.y }
+            val footerLimit = minY + (maxY - minY).coerceAtLeast(1f) * 0.78f
+
+            val smallFooterGlyphs = glyphs.filter {
+                it.fontSizeInPt < typicalSize * 0.9f && it.y >= footerLimit
+            }
+            if (smallFooterGlyphs.isEmpty()) return null
+
+            // Reassemble horizontally printed footer fragments by baseline and
+            // X position, then accept only a strict current/total page pattern.
+            val rows = mutableListOf<MutableList<TextPosition>>()
+            smallFooterGlyphs.sortedBy { it.y }.forEach { glyph ->
+                val row = rows.lastOrNull()
+                val centerY = row?.map { it.y }?.average()?.toFloat()
+                if (row == null || centerY == null || abs(glyph.y - centerY) > 4f) {
+                    rows.add(mutableListOf(glyph))
+                } else {
+                    row.add(glyph)
+                }
+            }
+
+            for (row in rows) {
+                val sorted = row.sortedBy { it.x }
+                val clusters = mutableListOf<MutableList<TextPosition>>()
+                sorted.forEach { glyph ->
+                    val cluster = clusters.lastOrNull()
+                    val previous = cluster?.lastOrNull()
+                    if (cluster == null || previous == null ||
+                        glyph.x - (previous.x + previous.width) > 24f
+                    ) {
+                        clusters.add(mutableListOf(glyph))
+                    } else {
+                        cluster.add(glyph)
+                    }
+                }
+
+                for (cluster in clusters) {
+                    val raw = cluster.joinToString("") { it.unicode }
+                    val normalized = raw.replace(Regex("\\s+"), "")
+                    if (normalized.matches(Regex("\\d{1,4}/\\d{1,4}"))) {
+                        excluded.addAll(cluster)
+                        return normalized
+                    }
+                }
+            }
+            return null
         }
     }
 
